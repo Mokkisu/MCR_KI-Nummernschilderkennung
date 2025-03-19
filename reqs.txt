@@ -3,4 +3,4 @@ pytesseract
 pandas
 numpy
 ultralytics
-tk
+customtkinter

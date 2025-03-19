@@ -2,85 +2,168 @@ import cv2
 import pandas as pd
 import numpy as np
 import time
+import threading
 from datetime import datetime
-import tkinter as tk
-from tkinter import Label, Button, Canvas
+import customtkinter as ctk
 from PIL import Image, ImageTk
 from ultralytics import YOLO
 import pytesseract
 
+# Pfad zu Tesseract definieren
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
 # YOLO-Model für Nummernschilder laden (angepasstes Modell erforderlich)
-yolo_model = YOLO("best.pt")  # Ersetze "best.pt" mit deinem trainierten Modell
+yolo_model = YOLO("best.pt")  # Falls noch nicht trainiert, erstelle ein passendes Modell
 
-# Initialisierung der erlaubten Nummernschilder
 erlaubte_nummern = set()
+illegale_nummern = set()
 
-def lade_erlaubte_nummern(csv_datei):
+def lade_nummern(csv_datei):
     try:
-        df = pd.read_csv(csv_datei, header=None)
-        return set(df[0].astype(str))
+        with open(csv_datei, "r") as file:
+            content = file.read().strip()
+            return set(content.split(";")) if content else set()
     except FileNotFoundError:
         return set()
 
-erlaubte_nummern = lade_erlaubte_nummern("nummernschilder.csv")
+def speichere_nummern(csv_datei, nummern):
+    with open(csv_datei, "w") as file:
+        file.write(";".join(nummern))
 
-# Webcam-Stream starten
+erlaubte_nummern = lade_nummern("erlaubt.csv")
+illegale_nummern = lade_nummern("illegal.csv")
+
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 cap.set(cv2.CAP_PROP_FPS, 60)
 
+frame_lock = threading.Lock()
+latest_frame = None
+
+def capture_frames():
+    global latest_frame
+    while True:
+        ret, frame = cap.read()
+        if ret:
+            with frame_lock:
+                latest_frame = frame
+
 def erkenne_nummernschild(frame):
-    results = yolo_model(frame)
+    results = yolo_model.predict(frame, conf=0.5, verbose=False)
+    nummer = ""
     for result in results:
         for box in result.boxes.xyxy:
             x1, y1, x2, y2 = map(int, box[:4])
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             nummernschild = frame[y1:y2, x1:x2]
             
             if nummernschild.size == 0:
                 continue
             
             graustufen = cv2.cvtColor(nummernschild, cv2.COLOR_BGR2GRAY)
-            nummer = pytesseract.image_to_string(graustufen, config='--psm 8')
-            return nummer.strip()
-    return ""
+            nummer = pytesseract.image_to_string(graustufen, config='--psm 8').strip()
+    return nummer, frame
 
 def update_frame():
-    ret, frame = cap.read()
-    if not ret:
-        return
+    global latest_frame
+    with frame_lock:
+        if latest_frame is None:
+            root.after(16, update_frame)
+            return
+        frame = latest_frame.copy()
     
-    nummer = erkenne_nummernschild(frame)
+    nummer, frame = erkenne_nummernschild(frame)
+    if nummer:
+        if nummer not in erlaubte_nummern and nummer not in illegale_nummern:
+            illegale_nummern.add(nummer)
+            speichere_nummern("illegal.csv", illegale_nummern)
+    
     zugang = "Access Granted" if nummer in erlaubte_nummern else "Access Denied"
     
-    label_nummer.config(text=f"Erkanntes Nummernschild: {nummer}")
-    label_status.config(text=zugang, fg="green" if zugang == "Access Granted" else "red")
+    label_nummer.configure(text=f"Erkanntes Nummernschild: {nummer}")
+    label_status.configure(text=zugang, text_color="green" if zugang == "Access Granted" else "red")
     
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     frame = cv2.resize(frame, (640, 480))
     img = Image.fromarray(frame)
     img = ImageTk.PhotoImage(image=img)
-    canvas.create_image(0, 0, anchor=tk.NW, image=img)
+    canvas.create_image(0, 0, anchor=ctk.NW, image=img)
     canvas.image = img
     
-    root.after(16, update_frame)  # 60 FPS Refresh-Rate
+    root.after(16, update_frame)
 
-# GUI mit Tkinter
-root = tk.Tk()
-root.title("Nummernschilderkennung")
+def add_number():
+    nummer = entry_nummer.get()
+    if nummer and nummer not in erlaubte_nummern:
+        erlaubte_nummern.add(nummer)
+        speichere_nummern("erlaubt.csv", erlaubte_nummern)
+        load_numbers()
 
-canvas = Canvas(root, width=640, height=480)
+def remove_number():
+    nummer = entry_nummer.get()
+    if nummer in erlaubte_nummern:
+        erlaubte_nummern.remove(nummer)
+        speichere_nummern("erlaubt.csv", erlaubte_nummern)
+    elif nummer in illegale_nummern:
+        illegale_nummern.remove(nummer)
+        speichere_nummern("illegal.csv", illegale_nummern)
+    load_numbers()
+
+def load_numbers():
+    listbox_erlaubt.configure(state="normal")
+    listbox_erlaubt.delete("1.0", ctk.END)
+    for num in erlaubte_nummern:
+        listbox_erlaubt.insert(ctk.END, num + "\n")
+    listbox_erlaubt.configure(state="disabled")
+    
+    listbox_illegal.configure(state="normal")
+    listbox_illegal.delete("1.0", ctk.END)
+    for num in illegale_nummern:
+        listbox_illegal.insert(ctk.END, num + "\n")
+    listbox_illegal.configure(state="disabled")
+
+capture_thread = threading.Thread(target=capture_frames, daemon=True)
+capture_thread.start()
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+root = ctk.CTk()
+root.title("Nummernschilderkennung Dashboard")
+root.geometry("900x600")
+
+frame_left = ctk.CTkFrame(root, width=300, height=600)
+frame_left.pack(side=ctk.LEFT, fill=ctk.Y)
+
+canvas = ctk.CTkCanvas(root, width=640, height=480)
 canvas.pack()
 
-label_nummer = Label(root, text="Erkanntes Nummernschild: ")
+label_nummer = ctk.CTkLabel(frame_left, text="Erkanntes Nummernschild:")
 label_nummer.pack()
 
-label_status = Label(root, text="Status: ", font=("Arial", 14))
+label_status = ctk.CTkLabel(frame_left, text="Status:", font=("Arial", 14))
 label_status.pack()
 
-btn_exit = Button(root, text="Beenden", command=root.quit)
+entry_nummer = ctk.CTkEntry(frame_left, placeholder_text="Nummernschild eingeben")
+entry_nummer.pack()
+
+btn_add = ctk.CTkButton(frame_left, text="Hinzufügen", command=add_number)
+btn_add.pack()
+
+btn_remove = ctk.CTkButton(frame_left, text="Löschen", command=remove_number)
+btn_remove.pack()
+
+listbox_erlaubt = ctk.CTkTextbox(frame_left, height=100, width=250, state="disabled")
+listbox_erlaubt.pack(pady=5)
+
+listbox_illegal = ctk.CTkTextbox(frame_left, height=100, width=250, state="disabled")
+listbox_illegal.pack(pady=5)
+
+btn_exit = ctk.CTkButton(frame_left, text="Beenden", command=root.quit)
 btn_exit.pack()
 
+load_numbers()
 update_frame()
 root.mainloop()
 
