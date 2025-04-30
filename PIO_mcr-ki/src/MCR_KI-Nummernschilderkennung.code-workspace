@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../../../../../Sync-Schule/Schule/KI-MCR_Projekt/MCR_KI-Nummernschilderkennung"
+		},
+		{
+			"name": "PIO_mcr-ki",
+			"path": ".."
+		}
+	],
+	"settings": {
+		"git.ignoreLimitWarning": true
+	}
+}
